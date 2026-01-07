@@ -1,0 +1,1150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#1f2937">
+    <title>Expense Tracker</title>
+    <link rel="manifest" href="data:application/json;base64,ewogICJzaG9ydF9uYW1lIjogIkV4cGVuc2VzIiwKICAibmFtZSI6ICJEYWlseSBFeHBlbnNlIFRyYWNrZXIiLAogICJzdGFydF91cmwiOiAiLiIsCiAgImRpc3BsYXkiOiAic3RhbmRhbG9uZSIsCiAgInRoZW1lX2NvbG9yIjogIiMxZjI5MzciLAogICJiYWNrZ3JvdW5kX2NvbG9yIjogIiMxMTE4MjciCn0=">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            overscroll-behavior: none;
+        }
+        * {
+            -webkit-tap-highlight-color: transparent;
+        }
+        .calendar-day {
+            aspect-ratio: 1;
+        }
+        .sidebar {
+            position: fixed;
+            top: 0;
+            right: -100%;
+            width: 85%;
+            max-width: 400px;
+            height: 100vh;
+            background: #1f2937;
+            transition: right 0.3s ease-in-out;
+            z-index: 1000;
+            overflow-y: auto;
+        }
+        .sidebar.open {
+            right: 0;
+        }
+        .sidebar-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease-in-out;
+            z-index: 999;
+        }
+        .sidebar-overlay.open {
+            opacity: 1;
+            visibility: visible;
+        }
+        .loading-spinner {
+            border: 3px solid #374151;
+            border-top: 3px solid #f87171;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-gray-800 min-h-screen">
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="app && app.closeSidebar()"></div>
+    <div class="sidebar border-l border-gray-700" id="sidebar">
+        <div id="sidebarContent"></div>
+    </div>
+    <div id="app"></div>
+
+    <script>
+        // ===========================================
+        // FIREBASE CONFIGURATION
+        // ===========================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyCowVPcnvD59nkn-C_J8BoIvgsfU4uDe7Y",
+            authDomain: "expense-tracker-98930.firebaseapp.com",
+            projectId: "expense-tracker-98930",
+            storageBucket: "expense-tracker-98930.firebasestorage.app",
+            messagingSenderId: "293684799220",
+            appId: "1:293684799220:web:f29ec1b2ff46ee856560a1"
+        };
+
+        // Initialize Firebase
+        let db = null;
+        let auth = null;
+        let isFirebaseConfigured = false;
+
+        try {
+            // Check if Firebase config is set up
+            if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY_HERE") {
+                firebase.initializeApp(firebaseConfig);
+                db = firebase.firestore();
+                auth = firebase.auth();
+                isFirebaseConfigured = true;
+                console.log("Firebase initialized successfully!");
+            } else {
+                console.log("Firebase not configured - using localStorage only");
+            }
+        } catch (error) {
+            console.error("Firebase initialization error:", error);
+            isFirebaseConfigured = false;
+        }
+
+        // ===========================================
+        // ICONS
+        // ===========================================
+        const icons = {
+            dollar: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>',
+            trending: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>',
+            calendar: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>',
+            plus: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>',
+            trash: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>',
+            chevronLeft: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"></polyline></svg>',
+            chevronRight: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>',
+            list: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>',
+            menu: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>',
+            x: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>',
+            pieChart: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"></path><path d="M22 12A10 10 0 0 0 12 2v10z"></path></svg>',
+            barChart: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="20" x2="12" y2="10"></line><line x1="18" y1="20" x2="18" y2="4"></line><line x1="6" y1="20" x2="6" y2="16"></line></svg>',
+            user: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>',
+            logOut: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>',
+            cloud: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path></svg>'
+        };
+
+        // ===========================================
+        // EXPENSE TRACKER CLASS
+        // ===========================================
+        class ExpenseTracker {
+            constructor() {
+                this.user = null;
+                this.expenses = [];
+                this.showAddExpense = false;
+                this.amount = '';
+                this.category = 'Food';
+                this.selectedDate = new Date().toISOString().split('T')[0];
+                this.categories = ['Food', 'Transport', 'Shopping', 'Entertainment', 'Bills', 'Other'];
+                this.currentView = 'summary';
+                this.calendarMonth = new Date();
+                this.sidebarOpen = false;
+                this.sidebarView = 'menu';
+                this.loading = true;
+                this.syncStatus = 'synced'; // 'synced', 'syncing', 'offline'
+
+                // Set up auth state listener
+                if (isFirebaseConfigured && auth) {
+                    auth.onAuthStateChanged((user) => {
+                        this.user = user;
+                        this.loading = false;
+                        if (user) {
+                            this.loadExpensesFromFirebase();
+                        } else {
+                            this.loadExpensesFromLocalStorage();
+                        }
+                        this.render();
+                    });
+                } else {
+                    this.loading = false;
+                    this.loadExpensesFromLocalStorage();
+                    this.render();
+                }
+            }
+
+            // ===========================================
+            // AUTHENTICATION
+            // ===========================================
+            async signInWithGoogle() {
+                if (!isFirebaseConfigured) {
+                    alert('Firebase is not configured. Please add your Firebase config to use cloud sync.');
+                    return;
+                }
+
+                try {
+                    const provider = new firebase.auth.GoogleAuthProvider();
+                    await auth.signInWithPopup(provider);
+                } catch (error) {
+                    console.error('Sign in error:', error);
+                    alert('Sign in failed: ' + error.message);
+                }
+            }
+
+            async signOut() {
+                if (!isFirebaseConfigured) return;
+                
+                try {
+                    await auth.signOut();
+                    this.expenses = [];
+                    this.render();
+                } catch (error) {
+                    console.error('Sign out error:', error);
+                }
+            }
+
+            // ===========================================
+            // DATA LOADING
+            // ===========================================
+            loadExpensesFromLocalStorage() {
+                try {
+                    const saved = localStorage.getItem('expenses');
+                    this.expenses = saved ? JSON.parse(saved) : [];
+                } catch (e) {
+                    this.expenses = [];
+                }
+            }
+
+            async loadExpensesFromFirebase() {
+                if (!isFirebaseConfigured || !this.user) return;
+
+                try {
+                    this.syncStatus = 'syncing';
+                    const snapshot = await db.collection('users')
+                        .doc(this.user.uid)
+                        .collection('expenses')
+                        .get();
+
+                    this.expenses = snapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+
+                    this.expenses.sort((a, b) => new Date(b.date) - new Date(a.date));
+                    this.syncStatus = 'synced';
+                    this.render();
+                } catch (error) {
+                    console.error('Error loading from Firebase:', error);
+                    this.syncStatus = 'offline';
+                    this.loadExpensesFromLocalStorage();
+                }
+            }
+
+            // ===========================================
+            // DATA SAVING
+            // ===========================================
+            saveExpensesToLocalStorage() {
+                localStorage.setItem('expenses', JSON.stringify(this.expenses));
+            }
+
+            async saveExpenseToFirebase(expense) {
+                if (!isFirebaseConfigured || !this.user) return;
+
+                try {
+                    this.syncStatus = 'syncing';
+                    await db.collection('users')
+                        .doc(this.user.uid)
+                        .collection('expenses')
+                        .doc(expense.id.toString())
+                        .set(expense);
+                    this.syncStatus = 'synced';
+                } catch (error) {
+                    console.error('Error saving to Firebase:', error);
+                    this.syncStatus = 'offline';
+                }
+            }
+
+            async deleteExpenseFromFirebase(id) {
+                if (!isFirebaseConfigured || !this.user) return;
+
+                try {
+                    this.syncStatus = 'syncing';
+                    await db.collection('users')
+                        .doc(this.user.uid)
+                        .collection('expenses')
+                        .doc(id.toString())
+                        .delete();
+                    this.syncStatus = 'synced';
+                } catch (error) {
+                    console.error('Error deleting from Firebase:', error);
+                    this.syncStatus = 'offline';
+                }
+            }
+
+            // ===========================================
+            // EXPENSE OPERATIONS
+            // ===========================================
+            async addExpense() {
+                if (!this.amount || parseFloat(this.amount) <= 0) return;
+                
+                const selectedDateTime = new Date(this.selectedDate + 'T12:00:00');
+                
+                const newExpense = {
+                    id: Date.now(),
+                    amount: parseFloat(this.amount),
+                    category: this.category,
+                    date: selectedDateTime.toISOString()
+                };
+
+                this.expenses.unshift(newExpense);
+                this.expenses.sort((a, b) => new Date(b.date) - new Date(a.date));
+                
+                // Save locally first (instant)
+                this.saveExpensesToLocalStorage();
+                
+                // Then sync to Firebase
+                if (this.user) {
+                    await this.saveExpenseToFirebase(newExpense);
+                }
+
+                this.amount = '';
+                this.showAddExpense = false;
+                this.render();
+            }
+
+            async deleteExpense(id) {
+                this.expenses = this.expenses.filter(exp => exp.id !== id);
+                
+                // Save locally
+                this.saveExpensesToLocalStorage();
+                
+                // Sync to Firebase
+                if (this.user) {
+                    await this.deleteExpenseFromFirebase(id);
+                }
+                
+                this.render();
+            }
+
+            // ===========================================
+            // STATISTICS & CALCULATIONS
+            // ===========================================
+            getTodayExpenses() {
+                const today = new Date().toDateString();
+                return this.expenses
+                    .filter(exp => new Date(exp.date).toDateString() === today)
+                    .reduce((sum, exp) => sum + exp.amount, 0);
+            }
+
+            getWeekExpenses() {
+                const today = new Date();
+                today.setHours(23, 59, 59, 999);
+                const weekAgo = new Date();
+                weekAgo.setDate(weekAgo.getDate() - 7);
+                weekAgo.setHours(0, 0, 0, 0);
+                return this.expenses
+                    .filter(exp => {
+                        const expDate = new Date(exp.date);
+                        return expDate >= weekAgo && expDate <= today;
+                    })
+                    .reduce((sum, exp) => sum + exp.amount, 0);
+            }
+
+            getMonthExpenses(month = new Date()) {
+                const year = month.getFullYear();
+                const monthNum = month.getMonth();
+                return this.expenses
+                    .filter(exp => {
+                        const expDate = new Date(exp.date);
+                        return expDate.getFullYear() === year && expDate.getMonth() === monthNum;
+                    })
+                    .reduce((sum, exp) => sum + exp.amount, 0);
+            }
+
+            getExpensesForDate(dateString) {
+                return this.expenses.filter(exp => 
+                    new Date(exp.date).toDateString() === new Date(dateString).toDateString()
+                );
+            }
+
+            getTotalForDate(dateString) {
+                return this.getExpensesForDate(dateString)
+                    .reduce((sum, exp) => sum + exp.amount, 0);
+            }
+
+            getCategoryBreakdown() {
+                const breakdown = {};
+                this.categories.forEach(cat => breakdown[cat] = 0);
+                
+                this.expenses.forEach(exp => {
+                    if (breakdown.hasOwnProperty(exp.category)) {
+                        breakdown[exp.category] += exp.amount;
+                    }
+                });
+                
+                return breakdown;
+            }
+
+            getStatistics() {
+                if (this.expenses.length === 0) {
+                    return {
+                        avgDaily: 0,
+                        avgWeekly: 0,
+                        avgMonthly: 0,
+                        totalAllTime: 0,
+                        highestDay: 0,
+                        daysTracked: 0
+                    };
+                }
+
+                const dates = [...new Set(this.expenses.map(exp => new Date(exp.date).toDateString()))];
+                const dailyTotals = dates.map(date => this.getTotalForDate(date));
+                const total = this.expenses.reduce((sum, exp) => sum + exp.amount, 0);
+
+                return {
+                    avgDaily: dailyTotals.reduce((a, b) => a + b, 0) / dailyTotals.length,
+                    avgWeekly: (total / dates.length) * 7,
+                    avgMonthly: (total / dates.length) * 30,
+                    totalAllTime: total,
+                    highestDay: Math.max(...dailyTotals),
+                    daysTracked: dates.length
+                };
+            }
+
+            getDailyBreakdown() {
+                const last7Days = {};
+                const today = new Date();
+                
+                for (let i = 6; i >= 0; i--) {
+                    const date = new Date(today);
+                    date.setDate(date.getDate() - i);
+                    const dateString = date.toDateString();
+                    last7Days[dateString] = 0;
+                }
+
+                this.expenses.forEach(exp => {
+                    const dateString = new Date(exp.date).toDateString();
+                    if (last7Days.hasOwnProperty(dateString)) {
+                        last7Days[dateString] += exp.amount;
+                    }
+                });
+
+                return Object.entries(last7Days).map(([date, amount]) => ({
+                    date: new Date(date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
+                    amount
+                }));
+            }
+
+            getCalendarDays() {
+                const year = this.calendarMonth.getFullYear();
+                const month = this.calendarMonth.getMonth();
+                
+                const firstDay = new Date(year, month, 1);
+                const lastDay = new Date(year, month + 1, 0);
+                const startingDayOfWeek = firstDay.getDay();
+                
+                const days = [];
+                
+                for (let i = 0; i < startingDayOfWeek; i++) {
+                    days.push(null);
+                }
+                
+                for (let day = 1; day <= lastDay.getDate(); day++) {
+                    const date = new Date(year, month, day);
+                    days.push({
+                        date: date,
+                        dateString: date.toDateString(),
+                        day: day,
+                        isToday: date.toDateString() === new Date().toDateString(),
+                        total: this.getTotalForDate(date)
+                    });
+                }
+                
+                return days;
+            }
+
+            // ===========================================
+            // UI CONTROLS
+            // ===========================================
+            previousMonth() {
+                this.calendarMonth = new Date(this.calendarMonth.getFullYear(), this.calendarMonth.getMonth() - 1);
+                this.render();
+            }
+
+            nextMonth() {
+                this.calendarMonth = new Date(this.calendarMonth.getFullYear(), this.calendarMonth.getMonth() + 1);
+                this.render();
+            }
+
+            switchView(view) {
+                this.currentView = view;
+                this.render();
+            }
+
+            openSidebar(view = 'menu') {
+                this.sidebarView = view;
+                this.sidebarOpen = true;
+                document.getElementById('sidebar').classList.add('open');
+                document.getElementById('sidebarOverlay').classList.add('open');
+                this.renderSidebar();
+            }
+
+            closeSidebar() {
+                this.sidebarOpen = false;
+                document.getElementById('sidebar').classList.remove('open');
+                document.getElementById('sidebarOverlay').classList.remove('open');
+            }
+
+            toggleAddExpense() {
+                this.showAddExpense = !this.showAddExpense;
+                if (this.showAddExpense) {
+                    this.selectedDate = new Date().toISOString().split('T')[0];
+                }
+                this.render();
+            }
+
+            saveExpense() {
+                this.addExpense();
+            }
+
+            // ===========================================
+            // RENDERING
+            // ===========================================
+            render() {
+                const app = document.getElementById('app');
+
+                // Show loading screen
+                if (this.loading) {
+                    app.innerHTML = `
+                        <div class="flex items-center justify-center min-h-screen">
+                            <div class="text-center">
+                                <div class="loading-spinner mx-auto mb-4"></div>
+                                <p class="text-gray-400">Loading...</p>
+                            </div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Show sign-in screen if not authenticated and Firebase is configured
+                if (isFirebaseConfigured && !this.user) {
+                    app.innerHTML = this.renderSignInScreen();
+                    return;
+                }
+
+                // Show main app
+                const weekExpenses = this.getWeekExpenses();
+                
+                app.innerHTML = `
+                    <div class="max-w-md mx-auto p-4 pb-24">
+                        ${this.renderHeader()}
+                        ${this.renderViewToggle()}
+                        ${this.currentView === 'summary' ? this.renderSummaryView(weekExpenses) : this.renderCalendarView()}
+                        ${this.renderAddExpenseSection()}
+                    </div>
+                `;
+
+                this.attachEventListeners();
+            }
+
+            renderSignInScreen() {
+                return `
+                    <div class="flex items-center justify-center min-h-screen p-4">
+                        <div class="max-w-md w-full">
+                            <div class="bg-gray-800 border border-gray-700 rounded-3xl shadow-lg p-8 text-center">
+                                <div class="mb-6">
+                                    <div class="text-6xl mb-4">💰</div>
+                                    <h1 class="text-3xl font-bold text-white mb-2">Expense Tracker</h1>
+                                    <p class="text-gray-400">Track your spending across all devices</p>
+                                </div>
+
+                                <div class="bg-gray-700 rounded-xl p-6 mb-6">
+                                    <div class="flex items-start gap-3 mb-4">
+                                        <span class="text-2xl">${icons.cloud}</span>
+                                        <div class="text-left">
+                                            <div class="font-semibold text-white mb-1">Cloud Sync</div>
+                                            <div class="text-sm text-gray-400">Access your data on any device</div>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-start gap-3 mb-4">
+                                        <span class="text-2xl">📊</span>
+                                        <div class="text-left">
+                                            <div class="font-semibold text-white mb-1">Smart Analytics</div>
+                                            <div class="text-sm text-gray-400">Insights and spending patterns</div>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-start gap-3">
+                                        <span class="text-2xl">🔒</span>
+                                        <div class="text-left">
+                                            <div class="font-semibold text-white mb-1">Secure & Private</div>
+                                            <div class="text-sm text-gray-400">Your data is encrypted</div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <button onclick="app.signInWithGoogle()" 
+                                        class="w-full bg-white hover:bg-gray-100 text-gray-900 font-semibold py-4 px-6 rounded-xl flex items-center justify-center gap-3 transition-colors mb-4">
+                                    <svg width="20" height="20" viewBox="0 0 24 24">
+                                        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                                        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                                        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                                        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                                    </svg>
+                                    Sign in with Google
+                                </button>
+
+                                <p class="text-sm text-gray-500">
+                                    By signing in, you agree to sync your data with Firebase
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderHeader() {
+                const syncIcon = this.syncStatus === 'syncing' ? 
+                    '<div class="loading-spinner w-5 h-5"></div>' :
+                    this.syncStatus === 'synced' && this.user ? 
+                    `<span class="text-green-400" title="Synced">${icons.cloud}</span>` :
+                    '';
+
+                return `
+                    <div class="bg-gray-800 border border-gray-700 rounded-3xl shadow-lg p-6 mb-4">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <h1 class="text-3xl font-bold text-white mb-2">Expense Tracker</h1>
+                                <p class="text-gray-400">
+                                    ${this.user ? `Signed in as ${this.user.email}` : 'Track your daily spending'}
+                                </p>
+                            </div>
+                            <div class="flex items-center gap-3">
+                                ${syncIcon}
+                                <button onclick="app.openSidebar('menu')" class="text-gray-400 hover:text-white p-2">
+                                    ${icons.menu}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderViewToggle() {
+                return `
+                    <div class="bg-gray-800 border border-gray-700 rounded-2xl p-2 mb-4 flex gap-2">
+                        <button onclick="app.switchView('summary')" 
+                                class="flex-1 py-2 px-4 rounded-xl font-semibold transition-all ${this.currentView === 'summary' ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'}">
+                            <span class="inline-block mr-2">${icons.list}</span>
+                            Summary
+                        </button>
+                        <button onclick="app.switchView('calendar')" 
+                                class="flex-1 py-2 px-4 rounded-xl font-semibold transition-all ${this.currentView === 'calendar' ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'}">
+                            <span class="inline-block mr-2">${icons.calendar}</span>
+                            Calendar
+                        </button>
+                    </div>
+                `;
+            }
+
+            renderSummaryView(weekExpenses) {
+                return `
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div class="bg-gradient-to-br from-gray-700 to-gray-800 border border-gray-600 rounded-2xl shadow-lg p-5">
+                            <div class="flex items-center mb-2">
+                                <span class="text-gray-300">${icons.dollar}</span>
+                                <span class="text-sm font-medium text-gray-300 ml-2">Today</span>
+                            </div>
+                            <p class="text-3xl font-bold text-red-400">-$${this.getTodayExpenses().toFixed(2)}</p>
+                        </div>
+
+                        <div class="bg-gradient-to-br from-gray-700 to-gray-800 border border-gray-600 rounded-2xl shadow-lg p-5">
+                            <div class="flex items-center mb-2">
+                                <span class="text-gray-300">${icons.trending}</span>
+                                <span class="text-sm font-medium text-gray-300 ml-2">This Week</span>
+                            </div>
+                            <p class="text-3xl font-bold text-red-400">-$${weekExpenses.toFixed(2)}</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-800 border border-gray-700 rounded-3xl shadow-lg p-6 mb-4">
+                        <div class="flex items-center mb-4">
+                            <span class="text-gray-300">${icons.calendar}</span>
+                            <h2 class="text-xl font-bold text-white ml-2">Last 7 Days</h2>
+                        </div>
+                        <div class="space-y-3">
+                            ${this.getDailyBreakdown().map(day => `
+                                <div class="flex items-center justify-between">
+                                    <span class="text-gray-400 text-sm">${day.date}</span>
+                                    <div class="flex items-center gap-2">
+                                        <div class="h-2 bg-gray-700 rounded-full w-24">
+                                            <div class="h-2 bg-red-400 rounded-full transition-all" 
+                                                 style="width: ${weekExpenses > 0 ? Math.min((day.amount / weekExpenses) * 100, 100) : 0}%"></div>
+                                        </div>
+                                        <span class="text-red-400 font-semibold w-20 text-right">-$${day.amount.toFixed(2)}</span>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-800 border border-gray-700 rounded-3xl shadow-lg p-6">
+                        <h2 class="text-xl font-bold text-white mb-4">Recent Expenses</h2>
+                        ${this.expenses.length === 0 ? `
+                            <p class="text-gray-500 text-center py-8">No expenses yet. Add your first expense!</p>
+                        ` : `
+                            <div class="space-y-3">
+                                ${this.expenses.slice(0, 10).map(expense => `
+                                    <div class="flex items-center justify-between p-3 bg-gray-700 rounded-xl">
+                                        <div>
+                                            <p class="font-semibold text-red-400">-$${expense.amount.toFixed(2)}</p>
+                                            <p class="text-sm text-gray-400">${expense.category}</p>
+                                        </div>
+                                        <div class="flex items-center gap-3">
+                                            <span class="text-xs text-gray-500">
+                                                ${new Date(expense.date).toLocaleDateString()}
+                                            </span>
+                                            <button onclick="app.deleteExpense(${expense.id})" 
+                                                    class="text-red-400 hover:text-red-300 p-1">
+                                                ${icons.trash}
+                                            </button>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        `}
+                    </div>
+                `;
+            }
+
+            renderCalendarView() {
+                const monthName = this.calendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+                const days = this.getCalendarDays();
+                const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+                return `
+                    <div class="bg-gray-800 border border-gray-700 rounded-3xl shadow-lg p-6 mb-4">
+                        <div class="flex items-center justify-between mb-6">
+                            <button onclick="app.previousMonth()" class="p-2 text-gray-400 hover:text-white">
+                                ${icons.chevronLeft}
+                            </button>
+                            <h2 class="text-xl font-bold text-white">${monthName}</h2>
+                            <button onclick="app.nextMonth()" class="p-2 text-gray-400 hover:text-white">
+                                ${icons.chevronRight}
+                            </button>
+                        </div>
+
+                        <div class="grid grid-cols-7 gap-2 mb-2">
+                            ${weekDays.map(day => `
+                                <div class="text-center text-xs font-medium text-gray-400">${day}</div>
+                            `).join('')}
+                        </div>
+
+                        <div class="grid grid-cols-7 gap-2">
+                            ${days.map(day => {
+                                if (!day) return '<div class="calendar-day"></div>';
+                                
+                                const hasExpenses = day.total > 0;
+                                const isToday = day.isToday;
+                                
+                                return `
+                                    <div class="calendar-day relative">
+                                        <div class="p-2 rounded-lg ${isToday ? 'bg-gray-600 border-2 border-gray-500' : 'bg-gray-700'} h-full flex flex-col items-center justify-center">
+                                            <span class="text-sm ${isToday ? 'text-white font-bold' : 'text-gray-300'}">${day.day}</span>
+                                            ${hasExpenses ? `
+                                                <span class="text-xs text-red-400 font-semibold mt-1">-$${day.total.toFixed(0)}</span>
+                                            ` : ''}
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-800 border border-gray-700 rounded-2xl shadow-lg p-5 mb-4">
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-300 font-medium">Month Total</span>
+                            <span class="text-2xl font-bold text-red-400">
+                                -$${days.reduce((sum, day) => sum + (day ? day.total : 0), 0).toFixed(2)}
+                            </span>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderAddExpenseSection() {
+                return `
+                    ${!this.showAddExpense ? `
+                        <button onclick="app.toggleAddExpense()" class="w-full bg-gradient-to-r from-gray-700 to-gray-600 border border-gray-600 text-white rounded-2xl shadow-lg p-4 font-semibold flex items-center justify-center gap-2 mb-4 active:scale-95 transition-transform">
+                            <span>${icons.plus}</span>
+                            Add Expense
+                        </button>
+                    ` : `
+                        <div class="bg-gray-800 border border-gray-700 rounded-3xl shadow-lg p-6 mb-4">
+                            <h3 class="text-lg font-bold text-white mb-4">New Expense</h3>
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-2">Date</label>
+                                    <input type="date" id="expense-date" value="${this.selectedDate}" 
+                                           class="w-full px-4 py-3 bg-gray-700 border-2 border-gray-600 text-white rounded-xl focus:border-gray-500 focus:outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-2">Amount</label>
+                                    <input type="number" id="amount" value="${this.amount}" 
+                                           placeholder="0.00" step="0.01"
+                                           class="w-full px-4 py-3 bg-gray-700 border-2 border-gray-600 text-white rounded-xl focus:border-gray-500 focus:outline-none text-lg">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-2">Category</label>
+                                    <select id="category" class="w-full px-4 py-3 bg-gray-700 border-2 border-gray-600 text-white rounded-xl focus:border-gray-500 focus:outline-none">
+                                        ${this.categories.map(cat => `
+                                            <option value="${cat}" ${cat === this.category ? 'selected' : ''}>${cat}</option>
+                                        `).join('')}
+                                    </select>
+                                </div>
+                                <div class="flex gap-2">
+                                    <button onclick="app.saveExpense()" class="flex-1 bg-gray-600 text-white rounded-xl py-3 font-semibold active:scale-95 transition-transform">
+                                        Save
+                                    </button>
+                                    <button onclick="app.toggleAddExpense()" class="flex-1 bg-gray-700 border border-gray-600 text-gray-300 rounded-xl py-3 font-semibold active:scale-95 transition-transform">
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    `}
+                `;
+            }
+
+            attachEventListeners() {
+                if (this.showAddExpense) {
+                    const amountInput = document.getElementById('amount');
+                    const categorySelect = document.getElementById('category');
+                    const dateInput = document.getElementById('expense-date');
+                    
+                    if (amountInput) {
+                        amountInput.addEventListener('input', (e) => {
+                            this.amount = e.target.value;
+                        });
+                        amountInput.focus();
+                    }
+                    
+                    if (categorySelect) {
+                        categorySelect.addEventListener('change', (e) => {
+                            this.category = e.target.value;
+                        });
+                    }
+
+                    if (dateInput) {
+                        dateInput.addEventListener('change', (e) => {
+                            this.selectedDate = e.target.value;
+                        });
+                    }
+                }
+            }
+
+            // ===========================================
+            // SIDEBAR RENDERING (kept from original)
+            // ===========================================
+            renderSidebar() {
+                const content = document.getElementById('sidebarContent');
+                
+                if (this.sidebarView === 'menu') {
+                    content.innerHTML = this.renderSidebarMenu();
+                } else if (this.sidebarView === 'calendar') {
+                    content.innerHTML = this.renderSidebarCalendar();
+                } else if (this.sidebarView === 'categories') {
+                    content.innerHTML = this.renderSidebarCategories();
+                    setTimeout(() => this.renderPieChart(), 100);
+                } else if (this.sidebarView === 'statistics') {
+                    content.innerHTML = this.renderSidebarStatistics();
+                }
+            }
+
+            renderSidebarMenu() {
+                const stats = this.getStatistics();
+                return `
+                    <div class="p-6">
+                        <div class="flex items-center justify-between mb-8">
+                            <h2 class="text-2xl font-bold text-white">Menu</h2>
+                            <button onclick="app.closeSidebar()" class="text-gray-400 hover:text-white p-2">
+                                ${icons.x}
+                            </button>
+                        </div>
+
+                        ${this.user ? `
+                            <div class="bg-gray-800 rounded-xl p-4 border border-gray-700 mb-4">
+                                <div class="flex items-center gap-3 mb-3">
+                                    <div class="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center">
+                                        ${this.user.photoURL ? 
+                                            `<img src="${this.user.photoURL}" class="w-10 h-10 rounded-full" />` :
+                                            `<span class="text-gray-300">${icons.user}</span>`
+                                        }
+                                    </div>
+                                    <div class="flex-1">
+                                        <div class="text-white font-semibold">${this.user.displayName || 'User'}</div>
+                                        <div class="text-xs text-gray-400">${this.user.email}</div>
+                                    </div>
+                                </div>
+                                <button onclick="app.signOut()" 
+                                        class="w-full bg-gray-700 hover:bg-gray-600 text-white rounded-lg p-2 flex items-center justify-center gap-2 transition-colors text-sm">
+                                    <span>${icons.logOut}</span>
+                                    Sign Out
+                                </button>
+                            </div>
+                        ` : ''}
+
+                        <div class="space-y-3">
+                            <button onclick="app.openSidebar('calendar')" 
+                                    class="w-full bg-gray-700 hover:bg-gray-600 text-white rounded-xl p-4 flex items-center gap-3 transition-colors">
+                                <span class="text-gray-300">${icons.calendar}</span>
+                                <div class="text-left">
+                                    <div class="font-semibold">Monthly Calendar</div>
+                                    <div class="text-sm text-gray-400">View all expenses by date</div>
+                                </div>
+                            </button>
+
+                            <button onclick="app.openSidebar('categories')" 
+                                    class="w-full bg-gray-700 hover:bg-gray-600 text-white rounded-xl p-4 flex items-center gap-3 transition-colors">
+                                <span class="text-gray-300">${icons.pieChart}</span>
+                                <div class="text-left">
+                                    <div class="font-semibold">Category Breakdown</div>
+                                    <div class="text-sm text-gray-400">See spending by category</div>
+                                </div>
+                            </button>
+
+                            <button onclick="app.openSidebar('statistics')" 
+                                    class="w-full bg-gray-700 hover:bg-gray-600 text-white rounded-xl p-4 flex items-center gap-3 transition-colors">
+                                <span class="text-gray-300">${icons.barChart}</span>
+                                <div class="text-left">
+                                    <div class="font-semibold">Statistics</div>
+                                    <div class="text-sm text-gray-400">Averages and insights</div>
+                                </div>
+                            </button>
+                        </div>
+
+                        <div class="mt-8 bg-gray-800 rounded-xl p-4 border border-gray-700">
+                            <h3 class="text-lg font-bold text-white mb-3">Quick Stats</h3>
+                            <div class="space-y-2 text-sm">
+                                <div class="flex justify-between">
+                                    <span class="text-gray-400">Total Tracked:</span>
+                                    <span class="text-red-400 font-semibold">-$${stats.totalAllTime.toFixed(2)}</span>
+                                </div>
+                                <div class="flex justify-between">
+                                    <span class="text-gray-400">Days Logged:</span>
+                                    <span class="text-white font-semibold">${stats.daysTracked}</span>
+                                </div>
+                                <div class="flex justify-between">
+                                    <span class="text-gray-400">Avg per Day:</span>
+                                    <span class="text-red-400 font-semibold">-$${stats.avgDaily.toFixed(2)}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderSidebarCalendar() {
+                const monthName = this.calendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+                const days = this.getCalendarDays();
+                const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                const monthTotal = this.getMonthExpenses(this.calendarMonth);
+
+                return `
+                    <div class="p-6">
+                        <div class="flex items-center justify-between mb-6">
+                            <button onclick="app.openSidebar('menu')" class="text-gray-400 hover:text-white p-2">
+                                ${icons.chevronLeft}
+                            </button>
+                            <h2 class="text-xl font-bold text-white">Monthly Calendar</h2>
+                            <button onclick="app.closeSidebar()" class="text-gray-400 hover:text-white p-2">
+                                ${icons.x}
+                            </button>
+                        </div>
+
+                        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700 mb-4">
+                            <div class="flex items-center justify-between mb-4">
+                                <button onclick="app.previousMonth(); app.renderSidebar();" class="p-2 text-gray-400 hover:text-white">
+                                    ${icons.chevronLeft}
+                                </button>
+                                <h3 class="text-lg font-bold text-white">${monthName}</h3>
+                                <button onclick="app.nextMonth(); app.renderSidebar();" class="p-2 text-gray-400 hover:text-white">
+                                    ${icons.chevronRight}
+                                </button>
+                            </div>
+
+                            <div class="grid grid-cols-7 gap-1 mb-2">
+                                ${weekDays.map(day => `
+                                    <div class="text-center text-xs font-medium text-gray-400">${day}</div>
+                                `).join('')}
+                            </div>
+
+                            <div class="grid grid-cols-7 gap-1">
+                                ${days.map(day => {
+                                    if (!day) return '<div class="calendar-day"></div>';
+                                    
+                                    const hasExpenses = day.total > 0;
+                                    const isToday = day.isToday;
+                                    
+                                    return `
+                                        <div class="calendar-day relative">
+                                            <div class="p-1 rounded-lg ${isToday ? 'bg-gray-600 border border-gray-500' : 'bg-gray-700'} h-full flex flex-col items-center justify-center">
+                                                <span class="text-xs ${isToday ? 'text-white font-bold' : 'text-gray-300'}">${day.day}</span>
+                                                ${hasExpenses ? `
+                                                    <span class="text-[10px] text-red-400 font-semibold">$${day.total.toFixed(0)}</span>
+                                                ` : ''}
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+
+                            <div class="mt-4 pt-4 border-t border-gray-700">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-gray-300 font-medium">Month Total</span>
+                                    <span class="text-xl font-bold text-red-400">-$${monthTotal.toFixed(2)}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderSidebarCategories() {
+                const breakdown = this.getCategoryBreakdown();
+                const total = Object.values(breakdown).reduce((a, b) => a + b, 0);
+
+                return `
+                    <div class="p-6">
+                        <div class="flex items-center justify-between mb-6">
+                            <button onclick="app.openSidebar('menu')" class="text-gray-400 hover:text-white p-2">
+                                ${icons.chevronLeft}
+                            </button>
+                            <h2 class="text-xl font-bold text-white">Category Breakdown</h2>
+                            <button onclick="app.closeSidebar()" class="text-gray-400 hover:text-white p-2">
+                                ${icons.x}
+                            </button>
+                        </div>
+
+                        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700 mb-4">
+                            <canvas id="categoryChart" width="300" height="300"></canvas>
+                        </div>
+
+                        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                            <h3 class="text-lg font-bold text-white mb-3">Details</h3>
+                            <div class="space-y-3">
+                                ${Object.entries(breakdown).map(([category, amount]) => {
+                                    const percentage = total > 0 ? (amount / total) * 100 : 0;
+                                    return `
+                                        <div>
+                                            <div class="flex justify-between items-center mb-1">
+                                                <span class="text-gray-300 font-medium">${category}</span>
+                                                <span class="text-red-400 font-semibold">-$${amount.toFixed(2)}</span>
+                                            </div>
+                                            <div class="h-2 bg-gray-700 rounded-full">
+                                                <div class="h-2 bg-red-400 rounded-full" style="width: ${percentage}%"></div>
+                                            </div>
+                                            <div class="text-xs text-gray-500 mt-1">${percentage.toFixed(1)}%</div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderSidebarStatistics() {
+                const stats = this.getStatistics();
+
+                return `
+                    <div class="p-6">
+                        <div class="flex items-center justify-between mb-6">
+                            <button onclick="app.openSidebar('menu')" class="text-gray-400 hover:text-white p-2">
+                                ${icons.chevronLeft}
+                            </button>
+                            <h2 class="text-xl font-bold text-white">Statistics</h2>
+                            <button onclick="app.closeSidebar()" class="text-gray-400 hover:text-white p-2">
+                                ${icons.x}
+                            </button>
+                        </div>
+
+                        <div class="space-y-4">
+                            <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                                <div class="text-sm text-gray-400 mb-1">Average Daily Spend</div>
+                                <div class="text-3xl font-bold text-red-400">-$${stats.avgDaily.toFixed(2)}</div>
+                            </div>
+
+                            <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                                <div class="text-sm text-gray-400 mb-1">Average Weekly Spend</div>
+                                <div class="text-3xl font-bold text-red-400">-$${stats.avgWeekly.toFixed(2)}</div>
+                            </div>
+
+                            <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                                <div class="text-sm text-gray-400 mb-1">Average Monthly Spend</div>
+                                <div class="text-3xl font-bold text-red-400">-$${stats.avgMonthly.toFixed(2)}</div>
+                            </div>
+
+                            <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                                <div class="text-sm text-gray-400 mb-1">Highest Single Day</div>
+                                <div class="text-3xl font-bold text-red-400">-$${stats.highestDay.toFixed(2)}</div>
+                            </div>
+
+                            <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                                <div class="text-sm text-gray-400 mb-1">Total All Time</div>
+                                <div class="text-3xl font-bold text-red-400">-$${stats.totalAllTime.toFixed(2)}</div>
+                            </div>
+
+                            <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                                <div class="text-sm text-gray-400 mb-1">Days Tracked</div>
+                                <div class="text-3xl font-bold text-white">${stats.daysTracked}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderPieChart() {
+                const canvas = document.getElementById('categoryChart');
+                if (!canvas) return;
+
+                const ctx = canvas.getContext('2d');
+                const breakdown = this.getCategoryBreakdown();
+                
+                const data = {
+                    labels: Object.keys(breakdown),
+                    datasets: [{
+                        data: Object.values(breakdown),
+                        backgroundColor: [
+                            '#ef4444',
+                            '#f97316', 
+                            '#f59e0b',
+                            '#eab308',
+                            '#84cc16',
+                            '#22c55e'
+                        ],
+                        borderColor: '#1f2937',
+                        borderWidth: 2
+                    }]
+                };
+
+                new Chart(ctx, {
+                    type: 'doughnut',
+                    data: data,
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        // Initialize app
+        const app = new ExpenseTracker();
+        window.app = app;
+    </script>
+</body>
+</html>
